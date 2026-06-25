@@ -1,0 +1,19 @@
+{
+  "_note": "Fallback labels for knockout matches where teams are not yet determined. Keyed by football-data.org match ID. Labels are replaced by real team names as soon as the API resolves them.",
+  "537417": {"home": "Runner-up Group A", "away": "Runner-up Group B"},
+  "537423": {"home": "Winner Group E",   "away": "Best 3rd (A/B/C/D/F)"},
+  "537415": {"home": "Winner Group F",   "away": "Runner-up Group C"},
+  "537418": {"home": "Winner Group C",   "away": "Runner-up Group F"},
+  "537424": {"home": "Winner Group I",   "away": "Best 3rd (C/D/F/G/H)"},
+  "537416": {"home": "Runner-up Group E","away": "Runner-up Group I"},
+  "537425": {"home": "Winner Group A",   "away": "Best 3rd (C/E/F/H/I)"},
+  "537426": {"home": "Winner Group L",   "away": "Best 3rd (E/H/I/J/K)"},
+  "537422": {"home": "Winner Group D",   "away": "Best 3rd (B/E/F/I/J)"},
+  "537421": {"home": "Winner Group G",   "away": "Best 3rd (A/E/H/I/J)"},
+  "537420": {"home": "Runner-up Group K","away": "Runner-up Group L"},
+  "537419": {"home": "Winner Group H",   "away": "Runner-up Group J"},
+  "537429": {"home": "Winner Group B",   "away": "Best 3rd (E/F/G/I/J)"},
+  "537428": {"home": "Winner Group J",   "away": "Runner-up Group H"},
+  "537427": {"home": "Winner Group K",   "away": "Best 3rd (D/E/I/J/L)"},
+  "537430": {"home": "Runner-up Group D","away": "Runner-up Group G"}
+}
