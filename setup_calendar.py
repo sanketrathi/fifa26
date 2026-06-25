@@ -11,6 +11,7 @@ as a GitHub Actions secret.
 
 import json
 import os
+from pathlib import Path
 
 from dotenv import load_dotenv
 from google.oauth2 import service_account
@@ -18,15 +19,20 @@ from googleapiclient.discovery import build
 
 load_dotenv(".env.local")
 
-CREDENTIALS_JSON = os.environ["GOOGLE_CREDENTIALS_JSON"]
+
+def load_credentials() -> service_account.Credentials:
+    creds_file = os.environ.get("GOOGLE_CREDENTIALS_FILE")
+    if creds_file:
+        info = json.loads(Path(creds_file).read_text())
+    else:
+        info = json.loads(os.environ["GOOGLE_CREDENTIALS_JSON"])
+    return service_account.Credentials.from_service_account_info(
+        info, scopes=["https://www.googleapis.com/auth/calendar"]
+    )
 
 
 def main() -> None:
-    info = json.loads(CREDENTIALS_JSON)
-    creds = service_account.Credentials.from_service_account_info(
-        info, scopes=["https://www.googleapis.com/auth/calendar"]
-    )
-    service = build("calendar", "v3", credentials=creds, cache_discovery=False)
+    service = build("calendar", "v3", credentials=load_credentials(), cache_discovery=False)
 
     cal = service.calendars().insert(body={
         "summary": "⚽ FIFA World Cup 2026",

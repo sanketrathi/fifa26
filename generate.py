@@ -273,7 +273,9 @@ def main() -> None:
         scorers = scorers_by_id.get(match["id"])
 
         ev: dict = {
-            "id": f"wc2026{match['id']}",
+            # Google Calendar event IDs must match [a-v0-9]{5,1024} (base32hex).
+            # 'w' is out of range, so we prefix with 'fc' (FIFA Calendar).
+            "id": f"fc2026{match['id']}",
             "summary": event_summary(match, bracket),
             "description": event_description(match, rankings, scorers),
             "start": {"dateTime": start.strftime(fmt), "timeZone": "UTC"},
