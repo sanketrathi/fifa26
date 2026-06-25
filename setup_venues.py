@@ -21,6 +21,8 @@ from pathlib import Path
 import requests
 from dotenv import load_dotenv
 
+from constants import ESPN_TO_FD
+
 load_dotenv(".env.local")
 
 FOOTBALL_API_KEY = os.environ["FOOTBALL_DATA_API_KEY"]
@@ -28,19 +30,6 @@ VENUES_FILE = Path("venues.json")
 
 TOURNAMENT_START = date(2026, 6, 11)
 TOURNAMENT_END = date(2026, 7, 19)
-
-# Known name discrepancies between ESPN and football-data.org
-ESPN_TO_FD: dict[str, str] = {
-    "cape verde":              "cape verde islands",
-    "cote d'ivoire":           "ivory coast",
-    "côte d'ivoire":           "ivory coast",
-    "dr congo":                "congo dr",
-    "bosnia and herzegovina":  "bosnia-herzegovina",
-    "czech republic":          "czechia",
-    "usa":                     "united states",
-    "türkiye":                 "turkey",
-    "turkiye":                 "turkey",
-}
 
 
 def normalize(name: str) -> str:

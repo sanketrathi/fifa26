@@ -1,15 +1,31 @@
+"""
+Self-updating FIFA World Cup 2026 Google Calendar.
+
+Data pipeline:
+  football-data.org → match schedule, live scores, team names
+  venues.json        → static venue per match (built once by setup_venues.py)
+  rankings.json      → FIFA rankings as of tournament start
+  bracket.json       → fallback labels for unresolved knockout slots
+  ESPN API           → goal scorers for live/finished matches only
+
+Events are upserted directly to Google Calendar via the API.
+The GitHub Actions cron schedule self-adjusts and removes itself after the Final.
+"""
 import json
 import os
 import re
 import unicodedata
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any, TypedDict
 
 import requests
 from dotenv import load_dotenv
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
+
+from constants import ESPN_TO_FD
 
 load_dotenv(".env.local")
 
@@ -31,18 +47,12 @@ STAGE_LABELS = {
     "FINAL":          "Final",
 }
 
-# Known ESPN → football-data.org name discrepancies
-ESPN_TO_FD: dict[str, str] = {
-    "cape verde":             "cape verde islands",
-    "cote d'ivoire":          "ivory coast",
-    "côte d'ivoire":          "ivory coast",
-    "dr congo":               "congo dr",
-    "bosnia and herzegovina": "bosnia-herzegovina",
-    "czech republic":         "czechia",
-    "usa":                    "united states",
-    "türkiye":                "turkey",
-    "turkiye":                "turkey",
-}
+
+class Goal(TypedDict):
+    player: str
+    team: str
+    minute: str
+    type: str
 
 
 # ── Credentials ──────────────────────────────────────────────────────────────
@@ -70,7 +80,7 @@ def gcal_service():
 
 # ── Static data ───────────────────────────────────────────────────────────────
 
-def load_json(filename: str) -> dict:
+def load_json(filename: str) -> dict[str, Any]:
     with open(Path(__file__).parent / filename) as f:
         data = json.load(f)
     return {k: v for k, v in data.items() if not k.startswith("_")}
@@ -95,13 +105,11 @@ def normalize(name: str) -> str:
     return nfkd.encode("ascii", "ignore").decode("ascii").lower().strip()
 
 
-def fetch_espn_scorers(matches: list[dict]) -> dict[int, list[dict]]:
+def fetch_espn_scorers(matches: list[dict]) -> dict[int, list[Goal]]:
     """
     Fetches goal scorer data from ESPN for live or recently finished matches.
-    Venues are static (venues.json); only scorer data is fetched at runtime.
     Returns: match_id → list of {player, team, minute, type}
     """
-    now = datetime.now(timezone.utc)
     relevant = [
         m for m in matches
         if m["status"] in ("IN_PLAY", "PAUSED", "FINISHED")
@@ -110,9 +118,16 @@ def fetch_espn_scorers(matches: list[dict]) -> dict[int, list[dict]]:
     if not relevant:
         return {}
 
-    # Fetch ESPN for each unique date (deduplicated)
-    dates_needed = {m["utcDate"][:10].replace("-", "") for m in relevant}
-    espn_by_teams: dict[tuple[str, str], list[dict]] = {}
+    # ESPN uses local kickoff dates; late-evening North American kickoffs (e.g.
+    # 01:00 UTC) appear on the previous calendar day locally. Fetching UTC-1 as
+    # well ensures we never miss a match due to the timezone boundary.
+    dates_needed: set[str] = set()
+    for m in relevant:
+        utc_dt = datetime.fromisoformat(m["utcDate"].replace("Z", "+00:00"))
+        dates_needed.add(utc_dt.strftime("%Y%m%d"))
+        dates_needed.add((utc_dt - timedelta(days=1)).strftime("%Y%m%d"))
+
+    espn_by_teams: dict[tuple[str, str], list[Goal]] = {}
 
     for date_str in dates_needed:
         try:
@@ -137,7 +152,7 @@ def fetch_espn_scorers(matches: list[dict]) -> dict[int, list[dict]]:
             nh = ESPN_TO_FD.get(normalize(home_name), normalize(home_name))
             na = ESPN_TO_FD.get(normalize(away_name), normalize(away_name))
 
-            goals = []
+            goals: list[Goal] = []
             for detail in comp.get("details", []):
                 if "Goal" not in detail.get("type", {}).get("text", ""):
                     continue
@@ -147,12 +162,11 @@ def fetch_espn_scorers(matches: list[dict]) -> dict[int, list[dict]]:
                 team = ESPN_TO_FD.get(normalize(team), normalize(team))
                 minute = detail.get("clock", {}).get("displayValue", "")
                 goal_type = detail.get("type", {}).get("text", "Goal")
-                goals.append({"player": player, "team": team, "minute": minute, "type": goal_type})
+                goals.append(Goal(player=player, team=team, minute=minute, type=goal_type))
 
             espn_by_teams[(nh, na)] = goals
 
-    # Map back to football-data.org match IDs
-    result: dict[int, list[dict]] = {}
+    result: dict[int, list[Goal]] = {}
     for match in relevant:
         nh = ESPN_TO_FD.get(normalize(match["homeTeam"]["name"]), normalize(match["homeTeam"]["name"]))
         na = ESPN_TO_FD.get(normalize(match["awayTeam"]["name"]), normalize(match["awayTeam"]["name"]))
@@ -169,6 +183,16 @@ def event_summary(match: dict, bracket: dict) -> str:
     home = match["homeTeam"]["name"]
     away = match["awayTeam"]["name"]
     if home and away:
+        if match["status"] == "FINISHED":
+            ft = match["score"]["fullTime"]
+            if ft["home"] is not None:
+                h, a = ft["home"], ft["away"]
+                suffix = ""
+                if match["score"]["duration"] == "EXTRA_TIME":
+                    suffix = " (AET)"
+                elif match["score"]["duration"] == "PENALTY_SHOOTOUT":
+                    suffix = " (Pens)"
+                return f"{home} {h}–{a} {away}{suffix}"
         return f"{home} vs {away}"
     fallback = bracket.get(str(match["id"]))
     if fallback:
@@ -176,7 +200,7 @@ def event_summary(match: dict, bracket: dict) -> str:
     return f"{STAGE_LABELS.get(match['stage'], match['stage'])} — TBD vs TBD"
 
 
-def event_description(match: dict, rankings: dict, scorers: list[dict] | None) -> str:
+def event_description(match: dict, rankings: dict, scorers: list[Goal] | None) -> str:
     lines = []
 
     # FIFA rankings — shown even for TBD matches if both sides are resolvable
@@ -239,6 +263,9 @@ def compute_cron(matches: list[dict]) -> str | None:
 
 
 def update_workflow_cron(cron: str | None) -> None:
+    # Rewrites .github/workflows/update.yml in-place. When cron is None
+    # (tournament over), the entire schedule: block is removed so the workflow
+    # stops triggering automatically. The workflow can still be run manually.
     path = Path(".github/workflows/update.yml")
     original = path.read_text()
 
@@ -263,7 +290,6 @@ def main() -> None:
     scorers_by_id = fetch_espn_scorers(matches)
 
     service = gcal_service()
-    now = datetime.now(timezone.utc)
     fmt = "%Y-%m-%dT%H:%M:%SZ"
 
     for match in matches:
