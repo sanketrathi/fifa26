@@ -182,6 +182,8 @@ def fetch_espn_scorers(matches: list[dict]) -> dict[int, list[Goal]]:
 def event_summary(match: dict, bracket: dict) -> str:
     home = match["homeTeam"]["name"]
     away = match["awayTeam"]["name"]
+    group = match.get("group", "")
+    group_suffix = f" ({group.replace('GROUP_', 'Group ')})" if group else ""
     if home and away:
         if match["status"] == "FINISHED":
             ft = match["score"]["fullTime"]
@@ -192,8 +194,8 @@ def event_summary(match: dict, bracket: dict) -> str:
                     suffix = " (AET)"
                 elif match["score"]["duration"] == "PENALTY_SHOOTOUT":
                     suffix = " (Pens)"
-                return f"{home} {h}–{a} {away}{suffix}"
-        return f"{home} vs {away}"
+                return f"{home} {h}–{a} {away}{suffix}{group_suffix}"
+        return f"{home} vs {away}{group_suffix}"
     fallback = bracket.get(str(match["id"]))
     if fallback:
         return f"{fallback['home']} vs {fallback['away']}"
