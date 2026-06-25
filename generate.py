@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import unicodedata
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -14,7 +15,6 @@ load_dotenv(".env.local")
 
 FOOTBALL_API_KEY = os.environ["FOOTBALL_DATA_API_KEY"]
 CALENDAR_ID = os.environ["GOOGLE_CALENDAR_ID"]
-CREDENTIALS_JSON = os.environ["GOOGLE_CREDENTIALS_JSON"]
 
 TOURNAMENT_START = date(2026, 6, 11)
 TOURNAMENT_END = date(2026, 7, 19)
@@ -22,38 +22,61 @@ TOURNAMENT_END = date(2026, 7, 19)
 MATCH_DURATION = timedelta(minutes=150)
 
 STAGE_LABELS = {
-    "GROUP_STAGE":   "Group Stage",
-    "LAST_32":       "Round of 32",
-    "LAST_16":       "Round of 16",
-    "QUARTER_FINALS":"Quarterfinal",
-    "SEMI_FINALS":   "Semifinal",
-    "THIRD_PLACE":   "Third Place",
-    "FINAL":         "Final",
+    "GROUP_STAGE":    "Group Stage",
+    "LAST_32":        "Round of 32",
+    "LAST_16":        "Round of 16",
+    "QUARTER_FINALS": "Quarterfinal",
+    "SEMI_FINALS":    "Semifinal",
+    "THIRD_PLACE":    "Third Place",
+    "FINAL":          "Final",
+}
+
+# Known ESPN → football-data.org name discrepancies
+ESPN_TO_FD: dict[str, str] = {
+    "cape verde":             "cape verde islands",
+    "cote d'ivoire":          "ivory coast",
+    "côte d'ivoire":          "ivory coast",
+    "dr congo":               "congo dr",
+    "bosnia and herzegovina": "bosnia-herzegovina",
+    "czech republic":         "czechia",
+    "usa":                    "united states",
+    "türkiye":                "turkey",
+    "turkiye":                "turkey",
 }
 
 
-# ── Google Calendar ──────────────────────────────────────────────────────────
+# ── Credentials ──────────────────────────────────────────────────────────────
 
-def gcal_service():
-    info = json.loads(CREDENTIALS_JSON)
-    creds = service_account.Credentials.from_service_account_info(
+def load_credentials() -> service_account.Credentials:
+    """
+    Supports two credential sources:
+    - GOOGLE_CREDENTIALS_FILE: path to a service account JSON file (local dev)
+    - GOOGLE_CREDENTIALS_JSON: raw JSON string (GitHub Actions secret)
+    """
+    creds_file = os.environ.get("GOOGLE_CREDENTIALS_FILE")
+    if creds_file:
+        info = json.loads(Path(creds_file).read_text())
+    else:
+        info = json.loads(os.environ["GOOGLE_CREDENTIALS_JSON"])
+
+    return service_account.Credentials.from_service_account_info(
         info, scopes=["https://www.googleapis.com/auth/calendar"]
     )
-    return build("calendar", "v3", credentials=creds, cache_discovery=False)
 
 
-def upsert_event(service, event: dict) -> None:
-    eid = event["id"]
-    try:
-        service.events().patch(calendarId=CALENDAR_ID, eventId=eid, body=event).execute()
-    except HttpError as e:
-        if e.resp.status == 404:
-            service.events().insert(calendarId=CALENDAR_ID, body=event).execute()
-        else:
-            raise
+def gcal_service():
+    return build("calendar", "v3", credentials=load_credentials(), cache_discovery=False)
 
 
-# ── Football data ────────────────────────────────────────────────────────────
+# ── Static data ───────────────────────────────────────────────────────────────
+
+def load_json(filename: str) -> dict:
+    with open(Path(__file__).parent / filename) as f:
+        data = json.load(f)
+    return {k: v for k, v in data.items() if not k.startswith("_")}
+
+
+# ── Football data ─────────────────────────────────────────────────────────────
 
 def fetch_matches() -> list[dict]:
     r = requests.get(
@@ -65,13 +88,82 @@ def fetch_matches() -> list[dict]:
     return r.json()["matches"]
 
 
-def load_bracket() -> dict:
-    with open(Path(__file__).parent / "bracket.json") as f:
-        data = json.load(f)
-    return {k: v for k, v in data.items() if not k.startswith("_")}
+# ── ESPN scorer enrichment ────────────────────────────────────────────────────
+
+def normalize(name: str) -> str:
+    nfkd = unicodedata.normalize("NFKD", name)
+    return nfkd.encode("ascii", "ignore").decode("ascii").lower().strip()
 
 
-# ── Event builders ───────────────────────────────────────────────────────────
+def fetch_espn_scorers(matches: list[dict]) -> dict[int, list[dict]]:
+    """
+    Fetches goal scorer data from ESPN for live or recently finished matches.
+    Venues are static (venues.json); only scorer data is fetched at runtime.
+    Returns: match_id → list of {player, team, minute, type}
+    """
+    now = datetime.now(timezone.utc)
+    relevant = [
+        m for m in matches
+        if m["status"] in ("IN_PLAY", "PAUSED", "FINISHED")
+        and m["homeTeam"]["name"] and m["awayTeam"]["name"]
+    ]
+    if not relevant:
+        return {}
+
+    # Fetch ESPN for each unique date (deduplicated)
+    dates_needed = {m["utcDate"][:10].replace("-", "") for m in relevant}
+    espn_by_teams: dict[tuple[str, str], list[dict]] = {}
+
+    for date_str in dates_needed:
+        try:
+            r = requests.get(
+                "https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard",
+                params={"dates": date_str},
+                timeout=15,
+            )
+            r.raise_for_status()
+        except Exception:
+            continue
+
+        for event in r.json().get("events", []):
+            comp = event.get("competitions", [{}])[0]
+            competitors = comp.get("competitors", [])
+            home_name = next((c["team"]["displayName"] for c in competitors if c.get("homeAway") == "home"), "")
+            away_name = next((c["team"]["displayName"] for c in competitors if c.get("homeAway") == "away"), "")
+
+            if not home_name or not away_name:
+                continue
+
+            nh = ESPN_TO_FD.get(normalize(home_name), normalize(home_name))
+            na = ESPN_TO_FD.get(normalize(away_name), normalize(away_name))
+
+            goals = []
+            for detail in comp.get("details", []):
+                if "Goal" not in detail.get("type", {}).get("text", ""):
+                    continue
+                athletes = detail.get("athletesInvolved", [])
+                player = athletes[0].get("displayName", "") if athletes else ""
+                team = detail.get("team", {}).get("displayName", "")
+                team = ESPN_TO_FD.get(normalize(team), normalize(team))
+                minute = detail.get("clock", {}).get("displayValue", "")
+                goal_type = detail.get("type", {}).get("text", "Goal")
+                goals.append({"player": player, "team": team, "minute": minute, "type": goal_type})
+
+            espn_by_teams[(nh, na)] = goals
+
+    # Map back to football-data.org match IDs
+    result: dict[int, list[dict]] = {}
+    for match in relevant:
+        nh = ESPN_TO_FD.get(normalize(match["homeTeam"]["name"]), normalize(match["homeTeam"]["name"]))
+        na = ESPN_TO_FD.get(normalize(match["awayTeam"]["name"]), normalize(match["awayTeam"]["name"]))
+        goals = espn_by_teams.get((nh, na))
+        if goals is not None:
+            result[match["id"]] = goals
+
+    return result
+
+
+# ── Event builders ────────────────────────────────────────────────────────────
 
 def event_summary(match: dict, bracket: dict) -> str:
     home = match["homeTeam"]["name"]
@@ -84,55 +176,55 @@ def event_summary(match: dict, bracket: dict) -> str:
     return f"{STAGE_LABELS.get(match['stage'], match['stage'])} — TBD vs TBD"
 
 
-def event_description(match: dict) -> str:
-    parts = [STAGE_LABELS.get(match["stage"], match["stage"])]
+def event_description(match: dict, rankings: dict, scorers: list[dict] | None) -> str:
+    lines = []
 
-    if match.get("group"):
-        parts.append(match["group"].replace("GROUP_", "Group "))
+    # FIFA rankings — shown even for TBD matches if both sides are resolvable
+    home_name = match["homeTeam"]["name"]
+    away_name = match["awayTeam"]["name"]
+    if home_name and away_name:
+        hr = rankings.get(home_name, "–")
+        ar = rankings.get(away_name, "–")
+        lines.append(f"FIFA Rankings: {home_name} #{hr} · {away_name} #{ar}")
 
+    # Stage + group
+    stage = STAGE_LABELS.get(match["stage"], match["stage"])
+    group = match.get("group", "")
+    if group:
+        lines.append(f"{stage} · {group.replace('GROUP_', 'Group ')}")
+    else:
+        lines.append(stage)
+
+    # Score
     score = match["score"]
     status = match["status"]
-
     if status in ("IN_PLAY", "PAUSED") and score["halfTime"]["home"] is not None:
         h, a = score["halfTime"]["home"], score["halfTime"]["away"]
-        parts.append(f"HT: {h}–{a}")
-
+        lines.append(f"HT: {h}–{a}")
     if status == "FINISHED" and score["fullTime"]["home"] is not None:
-        home = match["homeTeam"]["name"] or "Home"
-        away = match["awayTeam"]["name"] or "Away"
         h, a = score["fullTime"]["home"], score["fullTime"]["away"]
-        result = f"FT: {home} {h}–{a} {away}"
+        result = f"FT: {home_name} {h}–{a} {away_name}"
         if score["duration"] == "EXTRA_TIME":
             result += " (AET)"
         elif score["duration"] == "PENALTY_SHOOTOUT":
             result += " (Pens)"
-        parts.append(result)
+        lines.append(result)
 
-    return " · ".join(parts)
+    # Goal scorers
+    if scorers:
+        goal_lines = [f"{g['minute']} {g['player']} ({g['team']})" for g in scorers]
+        lines.append("Goals: " + " · ".join(goal_lines))
 
-
-def build_gcal_event(match: dict, bracket: dict) -> dict:
-    start = datetime.fromisoformat(match["utcDate"].replace("Z", "+00:00"))
-    end = start + MATCH_DURATION
-    fmt = "%Y-%m-%dT%H:%M:%SZ"
-    return {
-        # Google Calendar event IDs must match [a-v0-9]{5,1024}
-        "id": f"wc2026{match['id']}",
-        "summary": event_summary(match, bracket),
-        "description": event_description(match),
-        "start": {"dateTime": start.strftime(fmt), "timeZone": "UTC"},
-        "end":   {"dateTime": end.strftime(fmt),   "timeZone": "UTC"},
-    }
+    return "\n".join(lines)
 
 
-# ── Self-modifying cron ──────────────────────────────────────────────────────
+# ── Self-modifying cron ───────────────────────────────────────────────────────
 
 def compute_cron(matches: list[dict]) -> str | None:
     today = datetime.now(timezone.utc).date()
 
     if today > TOURNAMENT_END:
-        # Tournament is over — remove the schedule trigger entirely.
-        return None
+        return None  # Tournament over — remove schedule trigger
 
     match_dates = {
         datetime.fromisoformat(m["utcDate"].replace("Z", "+00:00")).date()
@@ -141,53 +233,65 @@ def compute_cron(matches: list[dict]) -> str | None:
     tomorrow = today + timedelta(days=1)
 
     if today in match_dates or tomorrow in match_dates:
-        return "*/30 * * * *"   # Active match period: every 30 min
+        return "*/30 * * * *"
 
-    return "0 */3 * * *"        # Tournament but quiet day: every 3 hours
+    return "0 */3 * * *"
 
 
-def update_workflow_cron(cron: str | None) -> bool:
-    """
-    Rewrites the schedule trigger in update.yml.
-    If cron is None (tournament over), removes the schedule block so the
-    workflow only fires on workflow_dispatch and goes dormant.
-    Returns True if the file was changed.
-    """
+def update_workflow_cron(cron: str | None) -> None:
     path = Path(".github/workflows/update.yml")
     original = path.read_text()
 
     if cron is None:
-        # Remove the schedule block (the two lines: "  schedule:" and "    - cron: '...'")
-        updated = re.sub(
-            r"\s+schedule:\n\s+- cron: '[^']*'\n",
-            "\n",
-            original,
-        )
+        updated = re.sub(r"\s+schedule:\n(\s+- cron: '[^']*'\n)+", "\n", original)
     else:
         updated = re.sub(r"cron: '[^']*'", f"cron: '{cron}'", original)
 
-    if updated == original:
-        return False
-
-    path.write_text(updated)
-    label = cron if cron else "removed (tournament over)"
-    print(f"Updated workflow cron → {label}")
-    return True
+    if updated != original:
+        path.write_text(updated)
+        print(f"Workflow cron updated → {cron or 'removed (tournament over)'}")
 
 
-# ── Main ─────────────────────────────────────────────────────────────────────
+# ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
     matches = fetch_matches()
-    bracket = load_bracket()
+    bracket = load_json("bracket.json")
+    rankings = load_json("rankings.json")
+    venues = load_json("venues.json")
+
+    scorers_by_id = fetch_espn_scorers(matches)
 
     service = gcal_service()
-    for match in matches:
-        upsert_event(service, build_gcal_event(match, bracket))
-    print(f"Upserted {len(matches)} events to Google Calendar")
+    now = datetime.now(timezone.utc)
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
 
-    cron = compute_cron(matches)
-    update_workflow_cron(cron)
+    for match in matches:
+        start = datetime.fromisoformat(match["utcDate"].replace("Z", "+00:00"))
+        end = start + MATCH_DURATION
+        venue = venues.get(str(match["id"]))
+        scorers = scorers_by_id.get(match["id"])
+
+        ev: dict = {
+            "id": f"wc2026{match['id']}",
+            "summary": event_summary(match, bracket),
+            "description": event_description(match, rankings, scorers),
+            "start": {"dateTime": start.strftime(fmt), "timeZone": "UTC"},
+            "end":   {"dateTime": end.strftime(fmt),   "timeZone": "UTC"},
+        }
+        if venue:
+            ev["location"] = venue  # Google Calendar auto-links to Maps
+
+        try:
+            service.events().patch(calendarId=CALENDAR_ID, eventId=ev["id"], body=ev).execute()
+        except HttpError as e:
+            if e.resp.status == 404:
+                service.events().insert(calendarId=CALENDAR_ID, body=ev).execute()
+            else:
+                raise
+
+    print(f"Upserted {len(matches)} events")
+    update_workflow_cron(compute_cron(matches))
 
 
 if __name__ == "__main__":

@@ -1,61 +1,98 @@
-# ⚽ FIFA World Cup 2026 — Self-Updating Calendar Feed
+# ⚽ FIFA World Cup 2026 — Live Google Calendar
 
-Subscribe once. As the bracket resolves, placeholder slots (`Runner-up Group A`, `Best 3rd (C/D/F/G/H)`) are replaced with real team names automatically — no re-subscribing needed.
+Subscribe once. As the knockout bracket resolves, placeholder slots (`Runner-up Group A`, `Best 3rd (C/D/F/G/H)`) flip to real team names automatically. Updates hit Google Calendar within minutes.
 
-**Live feed:** https://sanketrathi.github.io/fifa26/calendar.ics
+**→ [Add to Google Calendar](https://calendar.google.com/calendar/render?cid=GOOGLE_CALENDAR_ID_PLACEHOLDER)**
 
-## Subscribe
+---
 
-| Client | Link |
-|--------|------|
-| Google Calendar | [Add to Google Calendar](https://www.google.com/calendar/render?cid=webcal://sanketrathi.github.io/fifa26/calendar.ics) |
-| Apple Calendar | [Add to Apple Calendar](webcal://sanketrathi.github.io/fifa26/calendar.ics) |
-| Other | Paste the feed URL above into any calendar app that supports ICS subscriptions |
+## What each event contains
+
+- **Title**: `Brazil vs Germany` (or bracket placeholder until resolved)
+- **Location**: `Estadio Azteca, Mexico City` — links to Google Maps
+- **Description**:
+  - FIFA rankings of both teams
+  - Stage and group
+  - Half-time score (while live)
+  - Full-time result with AET/Pens notation
+  - Goal scorers with minute and player name
 
 ## How it works
 
 ```
-GitHub Actions (every 30 min)
-    │
-    ▼
-football-data.org API          bracket.json (static fallback)
-    │                               │
-    └──────────────┬────────────────┘
-                   ▼
-            generate.py
-                   │
-                   ▼
-            calendar.ics  ──▶  GitHub Pages  ──▶  Your calendar
+GitHub Actions (adaptive cron)
+        │
+        ├── football-data.org   → match data, team names, scores
+        ├── venues.json         → static venue per match (built once)
+        ├── rankings.json       → FIFA rankings as of June 11, 2026
+        ├── bracket.json        → bracket labels for unresolved knockouts
+        └── ESPN API            → goal scorers (live + finished matches only)
+                │
+                ▼
+        Google Calendar API  →  events updated directly
+                │
+                ▼
+        Subscribers see changes within minutes
 ```
 
-- **Group stage** matches always have known teams from day one.
-- **Knockout matches** start as bracket placeholders (`bracket.json`) and flip to real names as soon as `football-data.org` returns them — typically within hours of the group stage ending.
-- Events use stable UIDs (`wc2026-{matchId}@sanketrathi.github.io`) so calendar clients update in-place rather than duplicating.
-- `SEQUENCE` increments as a match progresses (`TBD → teams known → finished`), signalling clients to refresh the event.
+The cron schedule self-adjusts:
+- **Match day or day before** → every 30 minutes
+- **Tournament, no match today/tomorrow** → every 3 hours
+- **After July 19** → schedule trigger removed; workflow goes dormant
 
-## Known limitation: Google Calendar refresh delay
+## Setup
 
-Google Calendar polls externally subscribed ICS feeds roughly every **12–24 hours**. There is no server-side mechanism to force a faster refresh — Google's Calendar API push notifications only work for natively-owned calendars, not subscribed feeds. The feed includes a `REFRESH-INTERVAL:PT1H` hint, which Google partially respects but does not guarantee.
+### 1. Secrets required
 
-**Bottom line:** updates will appear in Google Calendar within a day. Apple Calendar typically refreshes faster (~1 hour). For the knockout bracket specifically, teams are confirmed days before their match kicks off, so the lag is rarely meaningful in practice.
+| Secret | Where | Description |
+|--------|-------|-------------|
+| `FOOTBALL_DATA_API_KEY` | GitHub + `.env.local` | football-data.org free tier key |
+| `GOOGLE_CREDENTIALS_JSON` | GitHub secret only | Service account JSON (raw content) |
+| `GOOGLE_CREDENTIALS_FILE` | `.env.local` only | Path to service account JSON file |
+| `GOOGLE_CALENDAR_ID` | GitHub + `.env.local` | Target calendar ID |
 
-## Local development
+### 2. Google Cloud setup (one-time)
+
+1. Create a project at [console.cloud.google.com](https://console.cloud.google.com)
+2. Enable the **Google Calendar API**
+3. IAM & Admin → Service Accounts → Create → generate a JSON key → download it
+4. Save it locally as `service-account.json` (gitignored)
+5. Add to `.env.local`:
+   ```
+   GOOGLE_CREDENTIALS_FILE=./service-account.json
+   FOOTBALL_DATA_API_KEY=your_key
+   ```
+6. Run `uv run setup_calendar.py` → prints the `GOOGLE_CALENDAR_ID`
+7. Add `GOOGLE_CALENDAR_ID` to `.env.local`
+
+### 3. GitHub secrets
 
 ```bash
-cp .env.local.example .env.local
-# fill in FOOTBALL_DATA_API_KEY
-
-uv sync
-uv run generate.py   # writes calendar.ics
+gh secret set FOOTBALL_DATA_API_KEY --body "$(grep FOOTBALL_DATA_API_KEY .env.local | cut -d= -f2)"
+gh secret set GOOGLE_CALENDAR_ID    --body "$(grep GOOGLE_CALENDAR_ID .env.local | cut -d= -f2)"
+gh secret set GOOGLE_CREDENTIALS_JSON < service-account.json
 ```
 
-## Architecture decisions
+### 4. One-time data setup
 
-- **Single `.ics` file** — one URL to subscribe to, no per-team filtering (out of scope).
-- **`bracket.json`** — static file mapping `football-data.org` match IDs to human-readable bracket labels. Cross-referenced against the official FIFA schedule. Note: FIFA match numbers are not chronological (e.g., matches 73, 76, 74, 75 play in that date order) — the mapping was verified by converting each match's local kickoff time to UTC and matching against the API.
-- **GitHub Pages** — free, stable URL, correct `Content-Type` for ICS subscriptions. No server needed.
-- **`[skip ci]`** on bot commits — prevents the workflow from re-triggering itself when it commits an updated `calendar.ics`.
+```bash
+uv run setup_calendar.py   # creates + makes public the Google Calendar
+uv run setup_venues.py     # builds venues.json from ESPN (re-run after each knockout round)
+```
 
-## Built by
+### 5. Test locally
 
-[Claude Sonnet 4.6](https://anthropic.com) & [Sanket Rathi](https://github.com/sanketrathi)
+```bash
+uv run generate.py
+```
+
+## Updating venues for knockout matches
+
+`venues.json` covers all group stage matches. As the knockout bracket resolves, re-run `setup_venues.py` to fill in the remaining venues — it skips matches already present and only adds new ones.
+
+## Data sources
+
+- Match data & results: [football-data.org](https://www.football-data.org) (free tier)
+- Venues & goal scorers: ESPN unofficial API
+- FIFA rankings: official rankings as of June 11, 2026
+- Bracket structure: derived from official FIFA 2026 bracket

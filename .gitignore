@@ -1,5 +1,6 @@
 .claude/settings.local.json
 .env.local
+service-account.json
 __pycache__/
 *.pyc
 .DS_Store
