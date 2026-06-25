@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>FIFA World Cup 2026 — Live Calendar Feed</title>
+  <title>FIFA World Cup 2026 — Live Calendar</title>
   <style>
     :root {
       --bg: #0a0a0a;
@@ -25,7 +25,7 @@
       justify-content: center;
       padding: 2rem;
     }
-    .container { max-width: 540px; width: 100%; }
+    .container { max-width: 520px; width: 100%; }
     .badge {
       display: inline-block;
       background: var(--accent);
@@ -41,7 +41,6 @@
     h1 { font-size: 1.8rem; font-weight: 700; line-height: 1.2; margin-bottom: 0.75rem; }
     .subtitle { color: var(--muted); font-size: 0.95rem; line-height: 1.6; margin-bottom: 2rem; }
     .subtitle strong { color: var(--text); }
-    .buttons { display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 2rem; }
     a.btn {
       display: flex;
       align-items: center;
@@ -51,30 +50,17 @@
       text-decoration: none;
       font-size: 0.95rem;
       font-weight: 500;
-      border: 1px solid var(--border);
+      border: 1px solid var(--accent);
       background: var(--card);
       color: var(--text);
-      transition: border-color 0.15s, background 0.15s;
+      transition: background 0.15s;
+      margin-bottom: 2rem;
     }
-    a.btn:hover { border-color: var(--accent); background: #1a1a1a; }
-    a.btn .icon { font-size: 1.2rem; flex-shrink: 0; }
-    .raw {
-      background: var(--card);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 1rem 1.2rem;
-      margin-bottom: 2.5rem;
-    }
-    .raw label { display: block; font-size: 0.75rem; color: var(--muted); margin-bottom: 0.4rem; letter-spacing: 0.05em; text-transform: uppercase; }
-    .raw code {
-      font-size: 0.8rem;
-      color: var(--accent);
-      word-break: break-all;
-      font-family: "SF Mono", "Fira Code", monospace;
-    }
+    a.btn:hover { background: #1e1a10; }
+    a.btn .icon { font-size: 1.2rem; }
     .how { margin-bottom: 2.5rem; }
-    .how h2 { font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 0.75rem; }
-    .how ol { padding-left: 1.2rem; color: var(--muted); font-size: 0.875rem; line-height: 1.8; }
+    .how h2 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 0.75rem; }
+    .how ol { padding-left: 1.2rem; color: var(--muted); font-size: 0.875rem; line-height: 1.9; }
     .how ol strong { color: var(--text); }
     footer {
       border-top: 1px solid var(--border);
@@ -90,35 +76,26 @@
 <body>
   <div class="container">
     <div class="badge">⚽ World Cup 2026</div>
-    <h1>Self-Updating<br />Calendar Feed</h1>
+    <h1>Live Bracket<br/>in Your Calendar</h1>
     <p class="subtitle">
-      Subscribe once. As the bracket resolves — <strong>Round of 32, Last 16, Quarterfinals</strong> —
-      placeholder slots are replaced with real team names automatically.
-      No manual updates needed.
+      Subscribe once. As the knockout bracket resolves —
+      <strong>Round of 32, Last 16, Quarterfinals</strong> —
+      placeholder slots flip to real team names automatically.
+      Updates hit your Google Calendar within minutes, not hours.
     </p>
 
-    <div class="buttons">
-      <a class="btn" href="https://www.google.com/calendar/render?cid=webcal://sanketrathi.github.io/fifa26/calendar.ics">
-        <span class="icon">📅</span>
-        <span>Add to Google Calendar</span>
-      </a>
-      <a class="btn" href="webcal://sanketrathi.github.io/fifa26/calendar.ics">
-        <span class="icon">🍎</span>
-        <span>Add to Apple Calendar</span>
-      </a>
-    </div>
-
-    <div class="raw">
-      <label>Raw feed URL</label>
-      <code>https://sanketrathi.github.io/fifa26/calendar.ics</code>
-    </div>
+    <a class="btn" href="https://calendar.google.com/calendar/render?cid=GOOGLE_CALENDAR_ID_PLACEHOLDER">
+      <span class="icon">📅</span>
+      <span>Add to Google Calendar</span>
+    </a>
 
     <div class="how">
       <h2>How it works</h2>
       <ol>
         <li><strong>GitHub Actions</strong> fetches live match data every 30 minutes</li>
-        <li>Knockout placeholders resolve to <strong>real team names</strong> as results come in</li>
-        <li>Your calendar app picks up the changes on its next poll <em>(Google: ~24h)</em></li>
+        <li>Events are written <strong>directly to Google Calendar</strong> via the API — no polling lag</li>
+        <li>Knockout slots resolve to <strong>real team names</strong> as group results come in</li>
+        <li>The cron schedule <strong>adapts automatically</strong> — more frequent on match days, dormant after the Final</li>
       </ol>
     </div>
 

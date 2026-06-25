@@ -2,9 +2,10 @@ name: Update World Cup Calendar
 
 on:
   schedule:
-    # Every 30 min during tournament window (Jun–Jul 2026).
-    # GitHub may delay scheduled runs by up to 15 min under load — acceptable here
-    # since Google Calendar itself only polls feeds every 12–24 hours.
+    # Adaptive schedule — generate.py rewrites this cron and commits it:
+    # - Match day or day before → */30 * * * * (every 30 min)
+    # - Tournament, quiet day  → 0 */3 * * *  (every 3 hours)
+    # - Tournament over        → schedule block removed; only workflow_dispatch remains
     - cron: '*/30 * * * *'
   workflow_dispatch:
 
@@ -22,17 +23,19 @@ jobs:
 
       - run: uv sync --frozen
 
-      - name: Generate calendar
+      - name: Push events to Google Calendar
         env:
           FOOTBALL_DATA_API_KEY: ${{ secrets.FOOTBALL_DATA_API_KEY }}
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+          GOOGLE_CALENDAR_ID: ${{ secrets.GOOGLE_CALENDAR_ID }}
         run: uv run generate.py
 
-      - name: Commit if changed
+      - name: Commit cron change if schedule was updated
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add calendar.ics
+          git add .github/workflows/update.yml
           # [skip ci] prevents this bot commit from re-triggering the workflow,
           # which would otherwise loop: commit → trigger → no change → commit → ...
-          git diff --staged --quiet || git commit -m "chore: update calendar.ics [skip ci]"
+          git diff --staged --quiet || git commit -m "chore: update cron schedule [skip ci]"
           git push
