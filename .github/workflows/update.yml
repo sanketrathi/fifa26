@@ -32,5 +32,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add calendar.ics
+          # [skip ci] prevents this bot commit from re-triggering the workflow,
+          # which would otherwise loop: commit → trigger → no change → commit → ...
           git diff --staged --quiet || git commit -m "chore: update calendar.ics [skip ci]"
           git push
