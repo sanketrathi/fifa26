@@ -179,7 +179,30 @@ def fetch_espn_scorers(matches: list[dict]) -> dict[int, list[Goal]]:
 
 # ── Event builders ────────────────────────────────────────────────────────────
 
-def event_summary(match: dict, bracket: dict) -> str:
+def feeder_label(match_id: int, bracket: dict, matches_by_id: dict[int, dict]) -> str:
+    """
+    Returns a 'TeamA/TeamB' label for one side of an unresolved bracket slot,
+    recursing through feeder matches until real team names are found.
+    """
+    m = matches_by_id.get(match_id)
+    if not m:
+        return "TBD"
+    home = m["homeTeam"]["name"]
+    away = m["awayTeam"]["name"]
+    if home and away:
+        return f"{home}/{away}"
+    fb = bracket.get(str(match_id), {})
+    if "feeder_home" in fb:
+        h = feeder_label(int(fb["feeder_home"]), bracket, matches_by_id)
+        a = feeder_label(int(fb["feeder_away"]), bracket, matches_by_id)
+        # Take one representative team from each feeder side to keep the label compact
+        return f"{h.split('/')[0]}/{a.split('/')[0]}"
+    if "home" in fb:
+        return fb["home"]
+    return "TBD"
+
+
+def event_summary(match: dict, bracket: dict, matches_by_id: dict[int, dict]) -> str:
     home = match["homeTeam"]["name"]
     away = match["awayTeam"]["name"]
     group = match.get("group", "")
@@ -198,6 +221,10 @@ def event_summary(match: dict, bracket: dict) -> str:
         return f"{home} vs {away}{group_suffix}"
     fallback = bracket.get(str(match["id"]))
     if fallback:
+        if "feeder_home" in fallback:
+            h = feeder_label(int(fallback["feeder_home"]), bracket, matches_by_id)
+            a = feeder_label(int(fallback["feeder_away"]), bracket, matches_by_id)
+            return f"{h} vs {a}"
         return f"{fallback['home']} vs {fallback['away']}"
     return f"{STAGE_LABELS.get(match['stage'], match['stage'])} — TBD vs TBD"
 
@@ -290,6 +317,7 @@ def main() -> None:
     venues = load_json("venues.json")
 
     scorers_by_id = fetch_espn_scorers(matches)
+    matches_by_id = {m["id"]: m for m in matches}
 
     service = gcal_service()
     fmt = "%Y-%m-%dT%H:%M:%SZ"
@@ -304,7 +332,7 @@ def main() -> None:
             # Google Calendar event IDs must match [a-v0-9]{5,1024} (base32hex).
             # 'w' is out of range, so we prefix with 'fc' (FIFA Calendar).
             "id": f"fc2026{match['id']}",
-            "summary": event_summary(match, bracket),
+            "summary": event_summary(match, bracket, matches_by_id),
             "description": event_description(match, rankings, scorers),
             "start": {"dateTime": start.strftime(fmt), "timeZone": "UTC"},
             "end":   {"dateTime": end.strftime(fmt),   "timeZone": "UTC"},
