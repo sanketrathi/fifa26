@@ -179,26 +179,53 @@ def fetch_espn_scorers(matches: list[dict]) -> dict[int, list[Goal]]:
 
 # ── Event builders ────────────────────────────────────────────────────────────
 
-def feeder_label(match_id: int, bracket: dict, matches_by_id: dict[int, dict]) -> str:
+def match_winner(match: dict) -> str | None:
+    """Returns the winning team's name for a finished match, or None if not yet decided."""
+    if match["status"] != "FINISHED":
+        return None
+    winner = match["score"].get("winner")  # "HOME_TEAM" | "AWAY_TEAM" | "DRAW" | None
+    if winner == "HOME_TEAM":
+        return match["homeTeam"]["name"]
+    if winner == "AWAY_TEAM":
+        return match["awayTeam"]["name"]
+    return None
+
+
+def bracket_label(match_id: int, bracket: dict, matches_by_id: dict[int, dict]) -> str:
     """
-    Returns a 'TeamA/TeamB' label for one side of an unresolved bracket slot,
-    recursing through feeder matches until real team names are found.
+    Returns a display label for one side of an unresolved knockout slot.
+
+    Works backwards through the bracket tree:
+    - If the feeder match is finished → return the winner's name
+    - If the feeder match is still being played → return 'TeamA/TeamB'
+      (both possible teams, separated by '/')
+    - If the feeder match itself is unresolved → recurse deeper into the tree
+
+    This means we never rely on football-data.org to propagate winner names
+    into downstream bracket slots — we compute them ourselves from results.
     """
     m = matches_by_id.get(match_id)
     if not m:
         return "TBD"
+
     home = m["homeTeam"]["name"]
     away = m["awayTeam"]["name"]
+
     if home and away:
-        return f"{home}/{away}"
-    fb = bracket.get(str(match_id), {})
-    if "feeder_home" in fb:
-        h = feeder_label(int(fb["feeder_home"]), bracket, matches_by_id)
-        a = feeder_label(int(fb["feeder_away"]), bracket, matches_by_id)
-        # Take one representative team from each feeder side to keep the label compact
-        return f"{h.split('/')[0]}/{a.split('/')[0]}"
-    if "home" in fb:
-        return fb["home"]
+        winner = match_winner(m)
+        if winner:
+            return winner          # Match is done — we know exactly who advances
+        return f"{home}/{away}"    # Match is upcoming/live — either team could advance
+
+    # API hasn't populated team names yet for this slot — recurse into the bracket tree
+    entry = bracket.get(str(match_id), {})
+    if "feeder_home" in entry:
+        home_label = bracket_label(int(entry["feeder_home"]), bracket, matches_by_id)
+        away_label = bracket_label(int(entry["feeder_away"]), bracket, matches_by_id)
+        return f"{home_label}/{away_label}"
+    if "home" in entry:
+        return entry["home"]
+
     return "TBD"
 
 
@@ -222,8 +249,8 @@ def event_summary(match: dict, bracket: dict, matches_by_id: dict[int, dict]) ->
     fallback = bracket.get(str(match["id"]))
     if fallback:
         if "feeder_home" in fallback:
-            h = feeder_label(int(fallback["feeder_home"]), bracket, matches_by_id)
-            a = feeder_label(int(fallback["feeder_away"]), bracket, matches_by_id)
+            h = bracket_label(int(fallback["feeder_home"]), bracket, matches_by_id)
+            a = bracket_label(int(fallback["feeder_away"]), bracket, matches_by_id)
             return f"{h} vs {a}"
         return f"{fallback['home']} vs {fallback['away']}"
     return f"{STAGE_LABELS.get(match['stage'], match['stage'])} — TBD vs TBD"
